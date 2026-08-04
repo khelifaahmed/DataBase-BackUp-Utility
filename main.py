@@ -5,8 +5,41 @@ import time
 from pathlib import Path
 from datetime import datetime
 import requests
+import schedule
 
 from connectors import get_connector
+
+def run_scheduled_backup(args) -> None:
+    """Wraps the backup logic so it can be called repeatedly by the scheduler."""
+    logging.info(f"Starting scheduled backup: db={args.db_name}, type={args.db_type}")
+    start_time = time.time()
+    try:
+        connector = get_connector(
+            args.db_type,
+            host=args.host, port=args.port,
+            user=args.user, password=args.password,
+            db_name=args.db_name
+        )
+        result = connector.backup(args.output, args.verbose, compress=not args.no_compress)
+        elapsed = time.time() - start_time
+        logging.info(f"Scheduled backup successful: {result} (took {elapsed:.2f}s)")
+        send_slack_notification(
+            args.slack_webhook,
+            f":white_check_mark: Scheduled backup succeeded for `{args.db_name}` ({args.db_type}) in {elapsed:.2f}s",
+            args.verbose
+        )
+    except Exception as e:
+        elapsed = time.time() - start_time
+        logging.exception(f"Scheduled backup failed after {elapsed:.2f}s: {e}")
+        send_slack_notification(
+            args.slack_webhook,
+            f":x: Scheduled backup FAILED for `{args.db_name}` ({args.db_type}) after {elapsed:.2f}s: {e}",
+            args.verbose
+        )
+
+
+
+
 def send_slack_notification(webhook_url: str, message: str, verbose: bool = False) -> None:
     if not webhook_url:
         return  # notifications are optional; silently skip if no webhook configured
@@ -118,6 +151,8 @@ def build_parser():
     backup_parser.add_argument("--verbose", action="store_true")
     backup_parser.add_argument("--no-compress", action="store_true")
     backup_parser.add_argument("--slack-webhook", help="Slack webhook URL for completion notifications")
+    backup_parser.add_argument("--schedule", choices=["hourly", "daily"], help="Run backup repeatedly on a schedule (keeps process running)")
+
 
     restore_parser = subparsers.add_parser("restore", help="Restore a database from backup")
     restore_parser.add_argument("--db-type", required=True, choices=["sqlite", "mysql", "postgres", "mongodb"])
@@ -148,6 +183,18 @@ def main():
     args = parser.parse_args()
 
     if args.command == "backup":
+        if args.schedule == "hourly":
+            schedule.every().hour.do(run_scheduled_backup, args)
+        elif args.schedule == "daily":
+            schedule.every().day.at("02:00").do(run_scheduled_backup, args)
+
+            print(f"Scheduled backup to run {args.schedule}. Press Ctrl+C to stop.")
+            run_scheduled_backup(args)  # run once immediately too
+            while True:
+                schedule.run_pending()
+                time.sleep(30)
+            return
+    
         logging.info(f"Starting backup: db={args.db_name}, type={args.db_type}")
         start_time = time.time()
         try:
