@@ -7,6 +7,50 @@ from datetime import datetime
 
 from connectors import get_connector
 
+def cleanup_backups(backup_dir: str, keep: int, dry_run: bool = False) -> None:
+    dir_path = Path(backup_dir)
+    if not dir_path.exists():
+        print(f"No backups found (directory '{backup_dir}' does not exist).")
+        return
+
+    all_files = list(dir_path.glob("*.db*")) + list(dir_path.glob("*.sql*")) + list(dir_path.glob("*.zip"))
+
+    if not all_files:
+        print(f"No backup files found in '{backup_dir}'.")
+        return
+
+    # Group files by database name (the part before the first timestamp-like "_YYYYMMDD")
+    import re
+    groups = {}
+    for file in all_files:
+        match = re.match(r"^(.+?)_\d{8}_\d{6}", file.name)
+        db_name = match.group(1) if match else file.stem
+        groups.setdefault(db_name, []).append(file)
+
+    total_deleted = 0
+    for db_name, files in groups.items():
+        files_sorted = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+        to_keep = files_sorted[:keep]
+        to_delete = files_sorted[keep:]
+
+        if not to_delete:
+            continue
+
+        print(f"\n'{db_name}': {len(files_sorted)} backups found, keeping {len(to_keep)}, removing {len(to_delete)}")
+        for file in to_delete:
+            if dry_run:
+                print(f"  [dry-run] Would delete: {file.name}")
+            else:
+                print(f"  Deleting: {file.name}")
+                file.unlink()
+                total_deleted += 1
+                logging.info(f"Deleted old backup: {file}")
+
+    if dry_run:
+        print("\nDry run complete. No files were actually deleted.")
+    else:
+        print(f"\nCleanup complete. {total_deleted} file(s) deleted.")
+
 
 def setup_logging(log_dir: str = "./logs") -> None:
     log_path = Path(log_dir)
@@ -74,6 +118,12 @@ def build_parser():
     list_parser = subparsers.add_parser("list", help="List existing backups")
     list_parser.add_argument("--dir", default="./backups")
 
+    # ---- cleanup command ----
+    cleanup_parser = subparsers.add_parser("cleanup", help="Delete old backups, keeping only the most recent N per database")
+    cleanup_parser.add_argument("--dir", default="./backups", help="Directory containing backups")
+    cleanup_parser.add_argument("--keep", type=int, default=5, help="Number of most recent backups to keep per database")
+    cleanup_parser.add_argument("--dry-run", action="store_true", help="Preview what would be deleted without deleting")
+
     return parser
 
 
@@ -128,7 +178,8 @@ def main():
 
     elif args.command == "list":
         list_backups(args.dir)
-
+    elif args.command == "cleanup":
+        cleanup_backups(args.dir, args.keep, args.dry_run)
 
 if __name__ == "__main__":
     main()
