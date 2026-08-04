@@ -1,4 +1,30 @@
 import argparse
+import shutil
+import sys
+from pathlib import Path
+from datetime import datetime
+
+
+def backup_sqlite(db_name: str, output_dir: str, verbose: bool = False) -> Path:
+    source = Path(db_name)
+
+    if not source.exists():
+        print(f"Error: database file '{db_name}' not found.")
+        sys.exit(1)
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_filename = f"{source.stem}_{timestamp}{source.suffix}"
+    destination = output_path / backup_filename
+
+    if verbose:
+        print(f"Copying '{source}' -> '{destination}'")
+
+    shutil.copy2(source, destination)
+    return destination
+
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -17,6 +43,7 @@ def build_parser():
     backup_parser.add_argument("--password", help="Database password")
     backup_parser.add_argument("--db-name", required=True, help="Name of the database")
     backup_parser.add_argument("--output", default="./backups", help="Where to store the backup")
+    backup_parser.add_argument("--verbose", action="store_true", help="Enable detailed output")
 
     # ---- restore command ----
     restore_parser = subparsers.add_parser("restore", help="Restore a database from backup")
@@ -35,9 +62,15 @@ def main():
     args = parser.parse_args()
 
     if args.command == "backup":
-        print(f"[backup] Would back up {args.db_type} database '{args.db_name}' to {args.output}")
+        if args.db_type == "sqlite":
+            result = backup_sqlite(args.db_name, args.output, args.verbose)
+            print(f"Backup successful: {result}")
+        else:
+            print(f"[backup] {args.db_type} not implemented yet.")
+
     elif args.command == "restore":
         print(f"[restore] Would restore {args.db_type} database from {args.backup_file}")
+
     elif args.command == "list":
         print(f"[list] Would list backups in {args.dir}")
 
