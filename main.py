@@ -6,6 +6,119 @@ from datetime import datetime
 import gzip
 import logging
 import time
+import subprocess
+import os
+
+
+def backup_mysql(host, port, user, password, db_name, output_dir, verbose=False, compress=True) -> Path:
+    if not test_mysql_connection(host, port, user, password, db_name):
+        print("Error: could not connect to MySQL database. Check your credentials.")
+        sys.exit(1)
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    destination = output_path / f"{db_name}_{timestamp}.sql"
+
+    cmd = [
+        "mysqldump",
+        f"--host={host}",
+        f"--port={port or 3306}",
+        f"--user={user}",
+        db_name
+    ]
+
+    env = os.environ.copy()
+    env["MYSQL_PWD"] = password or ""  # avoids password showing up in process list
+
+    if verbose:
+        print(f"Running: {' '.join(cmd)}")
+
+    with open(destination, "wb") as out_file:
+        result = subprocess.run(cmd, stdout=out_file, stderr=subprocess.PIPE, env=env)
+
+    if result.returncode != 0:
+        print(f"mysqldump failed: {result.stderr.decode()}")
+        sys.exit(1)
+
+    if compress:
+        if verbose:
+            print(f"Compressing '{destination}'")
+        destination = compress_file(destination)
+
+    return destination
+
+
+def backup_postgres(host, port, user, password, db_name, output_dir, verbose=False, compress=True) -> Path:
+    if not test_postgres_connection(host, port, user, password, db_name):
+        print("Error: could not connect to PostgreSQL database. Check your credentials.")
+        sys.exit(1)
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    destination = output_path / f"{db_name}_{timestamp}.sql"
+
+    cmd = [
+        "pg_dump",
+        f"--host={host}",
+        f"--port={port or 5432}",
+        f"--username={user}",
+        db_name
+    ]
+
+    env = os.environ.copy()
+    env["PGPASSWORD"] = password or ""  # pg_dump reads password from this env var
+
+    if verbose:
+        print(f"Running: {' '.join(cmd)}")
+
+    with open(destination, "wb") as out_file:
+        result = subprocess.run(cmd, stdout=out_file, stderr=subprocess.PIPE, env=env)
+
+    if result.returncode != 0:
+        print(f"pg_dump failed: {result.stderr.decode()}")
+        sys.exit(1)
+
+    if compress:
+        if verbose:
+            print(f"Compressing '{destination}'")
+        destination = compress_file(destination)
+
+    return destination
+
+
+def test_mysql_connection(host, port, user, password, db_name) -> bool:
+    import pymysql
+    try:
+        conn = pymysql.connect(
+            host=host, port=port or 3306,
+            user=user, password=password or "",
+            database=db_name, connect_timeout=5
+        )
+        conn.close()
+        return True
+    except Exception as e:
+        logging.error(f"MySQL connection failed: {e}")
+        return False
+
+
+def test_postgres_connection(host, port, user, password, db_name) -> bool:
+    import psycopg2
+    try:
+        conn = psycopg2.connect(
+            host=host, port=port or 5432,
+            user=user, password=password or "",
+            dbname=db_name, connect_timeout=5
+        )
+        conn.close()
+        return True
+    except Exception as e:
+        logging.error(f"PostgreSQL connection failed: {e}")
+        return False
+
 
 def setup_logging(log_dir: str = "./logs") -> None:
     log_path = Path(log_dir)
@@ -19,6 +132,7 @@ def setup_logging(log_dir: str = "./logs") -> None:
             logging.StreamHandler()  # also prints to console
         ]
     )
+
 
 def compress_file(source_path: Path, delete_original: bool = True) -> Path:
     compressed_path = source_path.with_suffix(source_path.suffix + ".gz")
@@ -58,6 +172,7 @@ def backup_sqlite(db_name: str, output_dir: str, verbose: bool = False, compress
         destination = compress_file(destination)
     return destination
 
+
 def restore_sqlite(backup_file: str, target_db: str, verbose: bool = False) -> None:
     backup_path = Path(backup_file)
 
@@ -86,6 +201,7 @@ def restore_sqlite(backup_file: str, target_db: str, verbose: bool = False) -> N
 
     print(f"Restore successful: {target_path}")
 
+
 def list_backups(backup_dir: str) -> None:
     dir_path = Path(backup_dir)
 
@@ -93,7 +209,11 @@ def list_backups(backup_dir: str) -> None:
         print(f"No backups found (directory '{backup_dir}' does not exist).")
         return
 
-    backup_files = sorted(dir_path.glob("*.db*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    backup_files = sorted(
+        list(dir_path.glob("*.db*")) + list(dir_path.glob("*.sql*")),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True
+    )
 
     if not backup_files:
         print(f"No backup files found in '{backup_dir}'.")
@@ -148,23 +268,28 @@ def main():
     args = parser.parse_args()
 
     if args.command == "backup":
-        if args.db_type == "sqlite":
-            logging.info(f"Starting backup: db={args.db_name}, type={args.db_type}")
-            start_time = time.time()
-            try:
+        logging.info(f"Starting backup: db={args.db_name}, type={args.db_type}")
+        start_time = time.time()
+        try:
+            if args.db_type == "sqlite":
                 result = backup_sqlite(args.db_name, args.output, args.verbose, compress=not args.no_compress)
-                elapsed = time.time() - start_time
-                logging.info(f"Backup successful: {result} (took {elapsed:.2f}s)")
-            except SystemExit:
-                elapsed = time.time() - start_time
-                logging.error(f"Backup failed after {elapsed:.2f}s: database not found")
-                raise
-            except Exception as e:
-                elapsed = time.time() - start_time
-                logging.exception(f"Backup failed after {elapsed:.2f}s: {e}")
-                sys.exit(1)
-        else:
-            logging.warning(f"[backup] {args.db_type} not implemented yet.")
+            elif args.db_type == "mysql":
+                result = backup_mysql(args.host, args.port, args.user, args.password, args.db_name, args.output, args.verbose, compress=not args.no_compress)
+            elif args.db_type == "postgres":
+                result = backup_postgres(args.host, args.port, args.user, args.password, args.db_name, args.output, args.verbose, compress=not args.no_compress)
+            else:
+                logging.warning(f"[backup] {args.db_type} not implemented yet.")
+                return
+            elapsed = time.time() - start_time
+            logging.info(f"Backup successful: {result} (took {elapsed:.2f}s)")
+        except SystemExit:
+            elapsed = time.time() - start_time
+            logging.error(f"Backup failed after {elapsed:.2f}s")
+            raise
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logging.exception(f"Backup failed after {elapsed:.2f}s: {e}")
+            sys.exit(1)
     elif args.command == "restore":
         if args.db_type == "sqlite":
             logging.info(f"Starting restore: backup_file={args.backup_file}, target={args.target}")
