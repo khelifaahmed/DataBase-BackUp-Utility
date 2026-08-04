@@ -4,7 +4,21 @@ import sys
 from pathlib import Path
 from datetime import datetime
 import gzip
+import logging
+import time
 
+def setup_logging(log_dir: str = "./logs") -> None:
+    log_path = Path(log_dir)
+    log_path.mkdir(parents=True, exist_ok=True)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(log_path / "backup.log"),
+            logging.StreamHandler()  # also prints to console
+        ]
+    )
 
 def compress_file(source_path: Path, delete_original: bool = True) -> Path:
     compressed_path = source_path.with_suffix(source_path.suffix + ".gz")
@@ -129,21 +143,46 @@ def build_parser():
 
 
 def main():
+    setup_logging()
     parser = build_parser()
     args = parser.parse_args()
 
     if args.command == "backup":
         if args.db_type == "sqlite":
-            result = backup_sqlite(args.db_name, args.output, args.verbose, compress=not args.no_compress)
-            print(f"Backup successful: {result}")
+            logging.info(f"Starting backup: db={args.db_name}, type={args.db_type}")
+            start_time = time.time()
+            try:
+                result = backup_sqlite(args.db_name, args.output, args.verbose, compress=not args.no_compress)
+                elapsed = time.time() - start_time
+                logging.info(f"Backup successful: {result} (took {elapsed:.2f}s)")
+            except SystemExit:
+                elapsed = time.time() - start_time
+                logging.error(f"Backup failed after {elapsed:.2f}s: database not found")
+                raise
+            except Exception as e:
+                elapsed = time.time() - start_time
+                logging.exception(f"Backup failed after {elapsed:.2f}s: {e}")
+                sys.exit(1)
         else:
-            print(f"[backup] {args.db_type} not implemented yet.")
-
+            logging.warning(f"[backup] {args.db_type} not implemented yet.")
     elif args.command == "restore":
         if args.db_type == "sqlite":
-            restore_sqlite(args.backup_file, args.target, args.verbose)
+            logging.info(f"Starting restore: backup_file={args.backup_file}, target={args.target}")
+            start_time = time.time()
+            try:
+                restore_sqlite(args.backup_file, args.target, args.verbose)
+                elapsed = time.time() - start_time
+                logging.info(f"Restore successful (took {elapsed:.2f}s)")
+            except SystemExit:
+                elapsed = time.time() - start_time
+                logging.error(f"Restore failed after {elapsed:.2f}s: backup file not found")
+                raise
+            except Exception as e:
+                elapsed = time.time() - start_time
+                logging.exception(f"Restore failed after {elapsed:.2f}s: {e}")
+                sys.exit(1)
         else:
-            print(f"[restore] {args.db_type} not implemented yet.")
+            logging.warning(f"[restore] {args.db_type} not implemented yet.")
     elif args.command == "list":
         list_backups(args.dir)
 
