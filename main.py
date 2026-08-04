@@ -4,8 +4,22 @@ import logging
 import time
 from pathlib import Path
 from datetime import datetime
+import requests
 
 from connectors import get_connector
+def send_slack_notification(webhook_url: str, message: str, verbose: bool = False) -> None:
+    if not webhook_url:
+        return  # notifications are optional; silently skip if no webhook configured
+
+    try:
+        response = requests.post(webhook_url, json={"text": message}, timeout=5)
+        if response.status_code != 200:
+            logging.warning(f"Slack notification failed: HTTP {response.status_code}")
+        elif verbose:
+            print("Slack notification sent.")
+    except requests.RequestException as e:
+        logging.warning(f"Slack notification failed: {e}")
+
 
 def cleanup_backups(backup_dir: str, keep: int, dry_run: bool = False) -> None:
     dir_path = Path(backup_dir)
@@ -103,6 +117,7 @@ def build_parser():
     backup_parser.add_argument("--output", default="./backups")
     backup_parser.add_argument("--verbose", action="store_true")
     backup_parser.add_argument("--no-compress", action="store_true")
+    backup_parser.add_argument("--slack-webhook", help="Slack webhook URL for completion notifications")
 
     restore_parser = subparsers.add_parser("restore", help="Restore a database from backup")
     restore_parser.add_argument("--db-type", required=True, choices=["sqlite", "mysql", "postgres", "mongodb"])
@@ -145,13 +160,28 @@ def main():
             result = connector.backup(args.output, args.verbose, compress=not args.no_compress)
             elapsed = time.time() - start_time
             logging.info(f"Backup successful: {result} (took {elapsed:.2f}s)")
+            send_slack_notification(
+                args.slack_webhook,
+                f":white_check_mark: Backup succeeded for `{args.db_name}` ({args.db_type}) in {elapsed:.2f}s -> `{result}`",
+                args.verbose
+            )
         except SystemExit:
             elapsed = time.time() - start_time
             logging.error(f"Backup failed after {elapsed:.2f}s")
+            send_slack_notification(
+                args.slack_webhook,
+                f":x: Backup FAILED for `{args.db_name}` ({args.db_type}) after {elapsed:.2f}s",
+                args.verbose
+            )
             raise
         except Exception as e:
             elapsed = time.time() - start_time
             logging.exception(f"Backup failed after {elapsed:.2f}s: {e}")
+            send_slack_notification(
+                args.slack_webhook,
+                f":x: Backup FAILED for `{args.db_name}` ({args.db_type}) after {elapsed:.2f}s: {e}",
+                args.verbose
+            )
             sys.exit(1)
 
     elif args.command == "restore":
