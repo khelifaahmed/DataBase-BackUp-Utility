@@ -28,7 +28,7 @@ def list_backups(backup_dir: str) -> None:
         return
 
     backup_files = sorted(
-        list(dir_path.glob("*.db*")) + list(dir_path.glob("*.sql*")),
+        list(dir_path.glob("*.db*")) + list(dir_path.glob("*.sql*")) + list(dir_path.glob("*.zip")),
         key=lambda p: p.stat().st_mtime,
         reverse=True
     )

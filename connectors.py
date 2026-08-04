@@ -273,12 +273,106 @@ class PostgresConnector(DatabaseConnector):
 
         print(f"Restore successful into database '{self.db_name}'")
 
+def compress_dir(source_dir: Path, delete_original: bool = True) -> Path:
+    archive_base = str(source_dir)
+    archive_path = shutil.make_archive(archive_base, "zip", root_dir=source_dir)
+    if delete_original:
+        shutil.rmtree(source_dir)
+    return Path(archive_path)
+
+
+class MongoConnector(DatabaseConnector):
+    def _build_uri(self) -> str:
+        # Atlas format: mongodb+srv://user:password@cluster-host/?params
+        # self.host should be just the cluster hostname, e.g. cluster0.mok2nnd.mongodb.net
+        return f"mongodb+srv://{self.user}:{self.password}@{self.host}/?appName=Cluster0"
+
+    def test_connection(self) -> bool:
+        import pymongo
+        try:
+            client = pymongo.MongoClient(self._build_uri(), serverSelectionTimeoutMS=5000)
+            client.server_info()
+            client.close()
+            return True
+        except Exception as e:
+            print(f"MongoDB connection failed: {e}")
+            return False
+
+    def backup(self, output_dir: str, verbose: bool = False, compress: bool = True) -> Path:
+        if not self.test_connection():
+            print("Error: could not connect to MongoDB database. Check your credentials.")
+            sys.exit(1)
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dump_dir = output_path / f"{self.db_name}_{timestamp}"
+
+        cmd = [
+            "mongodump",
+            f"--uri={self._build_uri()}",
+            f"--db={self.db_name}",
+            f"--out={dump_dir}"
+        ]
+
+        if verbose:
+            print(f"Running mongodump for database '{self.db_name}' -> '{dump_dir}'")
+
+        result = subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+
+        if result.returncode != 0:
+            print(f"mongodump failed: {result.stderr.decode()}")
+            sys.exit(1)
+
+        destination = dump_dir
+        if compress:
+            if verbose:
+                print(f"Compressing '{dump_dir}'")
+            destination = compress_dir(dump_dir)
+
+        return destination
+
+    def restore(self, backup_file: str, verbose: bool = False, **kwargs) -> None:
+        backup_path = Path(backup_file)
+        if not backup_path.exists():
+            print(f"Error: backup file '{backup_file}' not found.")
+            sys.exit(1)
+
+        dump_dir = backup_path
+        cleanup_temp = False
+        if backup_path.suffix == ".zip":
+            dump_dir = backup_path.with_suffix("")
+            shutil.unpack_archive(str(backup_path), str(dump_dir))
+            cleanup_temp = True
+
+        cmd = [
+            "mongorestore",
+            f"--uri={self._build_uri()}",
+            f"--db={self.db_name}",
+            str(dump_dir / self.db_name)
+        ]
+
+        if verbose:
+            print(f"Restoring into MongoDB database '{self.db_name}'")
+
+        result = subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+
+        if cleanup_temp:
+            shutil.rmtree(dump_dir)
+
+        if result.returncode != 0:
+            print(f"mongorestore failed: {result.stderr.decode()}")
+            sys.exit(1)
+
+        print(f"Restore successful into database '{self.db_name}'")
 
 def get_connector(db_type: str, **kwargs) -> DatabaseConnector:
     connectors = {
         "sqlite": SQLiteConnector,
         "mysql": MySQLConnector,
         "postgres": PostgresConnector,
+        "mongodb": MongoConnector,
     }
 
     if db_type not in connectors:
