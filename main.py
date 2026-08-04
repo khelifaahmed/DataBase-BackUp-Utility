@@ -25,6 +25,26 @@ def backup_sqlite(db_name: str, output_dir: str, verbose: bool = False) -> Path:
     shutil.copy2(source, destination)
     return destination
 
+def restore_sqlite(backup_file: str, target_db: str, verbose: bool = False) -> None:
+    backup_path = Path(backup_file)
+
+    if not backup_path.exists():
+        print(f"Error: backup file '{backup_file}' not found.")
+        sys.exit(1)
+
+    target_path = Path(target_db)
+
+    if target_path.exists():
+        confirm = input(f"'{target_db}' already exists. Overwrite? [y/N]: ").strip().lower()
+        if confirm != "y":
+            print("Restore cancelled.")
+            return
+
+    if verbose:
+        print(f"Restoring '{backup_path}' -> '{target_path}'")
+
+    shutil.copy2(backup_path, target_path)
+    print(f"Restore successful: {target_path}")
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -49,6 +69,8 @@ def build_parser():
     restore_parser = subparsers.add_parser("restore", help="Restore a database from backup")
     restore_parser.add_argument("--db-type", required=True, choices=["sqlite", "mysql", "postgres", "mongodb"])
     restore_parser.add_argument("--backup-file", required=True, help="Path to the backup file")
+    restore_parser.add_argument("--target", required=True, help="Path to restore the database to")
+    restore_parser.add_argument("--verbose", action="store_true", help="Enable detailed output")
 
     # ---- list command ----
     list_parser = subparsers.add_parser("list", help="List existing backups")
@@ -69,8 +91,10 @@ def main():
             print(f"[backup] {args.db_type} not implemented yet.")
 
     elif args.command == "restore":
-        print(f"[restore] Would restore {args.db_type} database from {args.backup_file}")
-
+        if args.db_type == "sqlite":
+            restore_sqlite(args.backup_file, args.target, args.verbose)
+        else:
+            print(f"[restore] {args.db_type} not implemented yet.")
     elif args.command == "list":
         print(f"[list] Would list backups in {args.dir}")
 
