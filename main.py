@@ -46,6 +46,28 @@ def restore_sqlite(backup_file: str, target_db: str, verbose: bool = False) -> N
     shutil.copy2(backup_path, target_path)
     print(f"Restore successful: {target_path}")
 
+def list_backups(backup_dir: str) -> None:
+    dir_path = Path(backup_dir)
+
+    if not dir_path.exists():
+        print(f"No backups found (directory '{backup_dir}' does not exist).")
+        return
+
+    backup_files = sorted(dir_path.glob("*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    if not backup_files:
+        print(f"No backup files found in '{backup_dir}'.")
+        return
+
+    print(f"{'Filename':<40} {'Size':>10}   {'Created'}")
+    print("-" * 75)
+
+    for file in backup_files:
+        size_kb = file.stat().st_size / 1024
+        created = datetime.fromtimestamp(file.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"{file.name:<40} {size_kb:>8.1f} KB   {created}")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="db-backup",
@@ -96,7 +118,7 @@ def main():
         else:
             print(f"[restore] {args.db_type} not implemented yet.")
     elif args.command == "list":
-        print(f"[list] Would list backups in {args.dir}")
+        list_backups(args.dir)
 
 
 if __name__ == "__main__":
