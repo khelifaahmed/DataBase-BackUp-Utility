@@ -3,9 +3,23 @@ import shutil
 import sys
 from pathlib import Path
 from datetime import datetime
+import gzip
 
 
-def backup_sqlite(db_name: str, output_dir: str, verbose: bool = False) -> Path:
+def compress_file(source_path: Path, delete_original: bool = True) -> Path:
+    compressed_path = source_path.with_suffix(source_path.suffix + ".gz")
+
+    with open(source_path, "rb") as f_in:
+        with gzip.open(compressed_path, "wb", compresslevel=6) as f_out:
+            shutil.copyfileobj(f_in, f_out)
+
+    if delete_original:
+        source_path.unlink()
+
+    return compressed_path
+
+
+def backup_sqlite(db_name: str, output_dir: str, verbose: bool = False, compress: bool = True) -> Path:
     source = Path(db_name)
 
     if not source.exists():
@@ -23,6 +37,11 @@ def backup_sqlite(db_name: str, output_dir: str, verbose: bool = False) -> Path:
         print(f"Copying '{source}' -> '{destination}'")
 
     shutil.copy2(source, destination)
+
+    if compress:
+        if verbose:
+            print(f"Compressing '{destination}'")
+        destination = compress_file(destination)
     return destination
 
 def restore_sqlite(backup_file: str, target_db: str, verbose: bool = False) -> None:
@@ -40,10 +59,17 @@ def restore_sqlite(backup_file: str, target_db: str, verbose: bool = False) -> N
             print("Restore cancelled.")
             return
 
-    if verbose:
-        print(f"Restoring '{backup_path}' -> '{target_path}'")
+    if backup_path.suffix == ".gz":
+        if verbose:
+            print(f"Decompressing '{backup_path}' -> '{target_path}'")
+        with gzip.open(backup_path, "rb") as f_in:
+            with open(target_path, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+    else:
+        if verbose:
+            print(f"Restoring '{backup_path}' -> '{target_path}'")
+        shutil.copy2(backup_path, target_path)
 
-    shutil.copy2(backup_path, target_path)
     print(f"Restore successful: {target_path}")
 
 def list_backups(backup_dir: str) -> None:
@@ -53,7 +79,7 @@ def list_backups(backup_dir: str) -> None:
         print(f"No backups found (directory '{backup_dir}' does not exist).")
         return
 
-    backup_files = sorted(dir_path.glob("*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+    backup_files = sorted(dir_path.glob("*.db*"), key=lambda p: p.stat().st_mtime, reverse=True)
 
     if not backup_files:
         print(f"No backup files found in '{backup_dir}'.")
@@ -86,6 +112,7 @@ def build_parser():
     backup_parser.add_argument("--db-name", required=True, help="Name of the database")
     backup_parser.add_argument("--output", default="./backups", help="Where to store the backup")
     backup_parser.add_argument("--verbose", action="store_true", help="Enable detailed output")
+    backup_parser.add_argument("--no-compress", action="store_true", help="Skip compression")
 
     # ---- restore command ----
     restore_parser = subparsers.add_parser("restore", help="Restore a database from backup")
@@ -107,7 +134,7 @@ def main():
 
     if args.command == "backup":
         if args.db_type == "sqlite":
-            result = backup_sqlite(args.db_name, args.output, args.verbose)
+            result = backup_sqlite(args.db_name, args.output, args.verbose, compress=not args.no_compress)
             print(f"Backup successful: {result}")
         else:
             print(f"[backup] {args.db_type} not implemented yet.")
