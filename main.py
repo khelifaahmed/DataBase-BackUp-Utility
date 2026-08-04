@@ -1,210 +1,28 @@
 import argparse
-import shutil
 import sys
-from pathlib import Path
-from datetime import datetime
-import gzip
 import logging
 import time
-import subprocess
-import os
+from pathlib import Path
+from datetime import datetime
 
-
-def backup_mysql(host, port, user, password, db_name, output_dir, verbose=False, compress=True) -> Path:
-    if not test_mysql_connection(host, port, user, password, db_name):
-        print("Error: could not connect to MySQL database. Check your credentials.")
-        sys.exit(1)
-
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    destination = output_path / f"{db_name}_{timestamp}.sql"
-
-    cmd = [
-        "mysqldump",
-        f"--host={host}",
-        f"--port={port or 3306}",
-        f"--user={user}",
-        db_name
-    ]
-
-    env = os.environ.copy()
-    env["MYSQL_PWD"] = password or ""  # avoids password showing up in process list
-
-    if verbose:
-        print(f"Running: {' '.join(cmd)}")
-
-    with open(destination, "wb") as out_file:
-        result = subprocess.run(cmd, stdout=out_file, stderr=subprocess.PIPE, env=env)
-
-    if result.returncode != 0:
-        print(f"mysqldump failed: {result.stderr.decode()}")
-        sys.exit(1)
-
-    if compress:
-        if verbose:
-            print(f"Compressing '{destination}'")
-        destination = compress_file(destination)
-
-    return destination
-
-
-def backup_postgres(host, port, user, password, db_name, output_dir, verbose=False, compress=True) -> Path:
-    if not test_postgres_connection(host, port, user, password, db_name):
-        print("Error: could not connect to PostgreSQL database. Check your credentials.")
-        sys.exit(1)
-
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    destination = output_path / f"{db_name}_{timestamp}.sql"
-
-    cmd = [
-        "pg_dump",
-        f"--host={host}",
-        f"--port={port or 5432}",
-        f"--username={user}",
-        db_name
-    ]
-
-    env = os.environ.copy()
-    env["PGPASSWORD"] = password or ""  # pg_dump reads password from this env var
-
-    if verbose:
-        print(f"Running: {' '.join(cmd)}")
-
-    with open(destination, "wb") as out_file:
-        result = subprocess.run(cmd, stdout=out_file, stderr=subprocess.PIPE, env=env)
-
-    if result.returncode != 0:
-        print(f"pg_dump failed: {result.stderr.decode()}")
-        sys.exit(1)
-
-    if compress:
-        if verbose:
-            print(f"Compressing '{destination}'")
-        destination = compress_file(destination)
-
-    return destination
-
-
-def test_mysql_connection(host, port, user, password, db_name) -> bool:
-    import pymysql
-    try:
-        conn = pymysql.connect(
-            host=host, port=port or 3306,
-            user=user, password=password or "",
-            database=db_name, connect_timeout=5
-        )
-        conn.close()
-        return True
-    except Exception as e:
-        logging.error(f"MySQL connection failed: {e}")
-        return False
-
-
-def test_postgres_connection(host, port, user, password, db_name) -> bool:
-    import psycopg2
-    try:
-        conn = psycopg2.connect(
-            host=host, port=port or 5432,
-            user=user, password=password or "",
-            dbname=db_name, connect_timeout=5
-        )
-        conn.close()
-        return True
-    except Exception as e:
-        logging.error(f"PostgreSQL connection failed: {e}")
-        return False
+from connectors import get_connector
 
 
 def setup_logging(log_dir: str = "./logs") -> None:
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
             logging.FileHandler(log_path / "backup.log"),
-            logging.StreamHandler()  # also prints to console
+            logging.StreamHandler()
         ]
     )
 
 
-def compress_file(source_path: Path, delete_original: bool = True) -> Path:
-    compressed_path = source_path.with_suffix(source_path.suffix + ".gz")
-
-    with open(source_path, "rb") as f_in:
-        with gzip.open(compressed_path, "wb", compresslevel=6) as f_out:
-            shutil.copyfileobj(f_in, f_out)
-
-    if delete_original:
-        source_path.unlink()
-
-    return compressed_path
-
-
-def backup_sqlite(db_name: str, output_dir: str, verbose: bool = False, compress: bool = True) -> Path:
-    source = Path(db_name)
-
-    if not source.exists():
-        print(f"Error: database file '{db_name}' not found.")
-        sys.exit(1)
-
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_filename = f"{source.stem}_{timestamp}{source.suffix}"
-    destination = output_path / backup_filename
-
-    if verbose:
-        print(f"Copying '{source}' -> '{destination}'")
-
-    shutil.copy2(source, destination)
-
-    if compress:
-        if verbose:
-            print(f"Compressing '{destination}'")
-        destination = compress_file(destination)
-    return destination
-
-
-def restore_sqlite(backup_file: str, target_db: str, verbose: bool = False) -> None:
-    backup_path = Path(backup_file)
-
-    if not backup_path.exists():
-        print(f"Error: backup file '{backup_file}' not found.")
-        sys.exit(1)
-
-    target_path = Path(target_db)
-
-    if target_path.exists():
-        confirm = input(f"'{target_db}' already exists. Overwrite? [y/N]: ").strip().lower()
-        if confirm != "y":
-            print("Restore cancelled.")
-            return
-
-    if backup_path.suffix == ".gz":
-        if verbose:
-            print(f"Decompressing '{backup_path}' -> '{target_path}'")
-        with gzip.open(backup_path, "rb") as f_in:
-            with open(target_path, "wb") as f_out:
-                shutil.copyfileobj(f_in, f_out)
-    else:
-        if verbose:
-            print(f"Restoring '{backup_path}' -> '{target_path}'")
-        shutil.copy2(backup_path, target_path)
-
-    print(f"Restore successful: {target_path}")
-
-
 def list_backups(backup_dir: str) -> None:
     dir_path = Path(backup_dir)
-
     if not dir_path.exists():
         print(f"No backups found (directory '{backup_dir}' does not exist).")
         return
@@ -221,7 +39,6 @@ def list_backups(backup_dir: str) -> None:
 
     print(f"{'Filename':<40} {'Size':>10}   {'Created'}")
     print("-" * 75)
-
     for file in backup_files:
         size_kb = file.stat().st_size / 1024
         created = datetime.fromtimestamp(file.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
@@ -229,35 +46,33 @@ def list_backups(backup_dir: str) -> None:
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(
-        prog="db-backup",
-        description="A CLI tool for backing up and restoring databases."
-    )
-
+    parser = argparse.ArgumentParser(prog="db-backup", description="A CLI tool for backing up and restoring databases.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # ---- backup command ----
     backup_parser = subparsers.add_parser("backup", help="Create a database backup")
     backup_parser.add_argument("--db-type", required=True, choices=["sqlite", "mysql", "postgres", "mongodb"])
-    backup_parser.add_argument("--host", help="Database host")
-    backup_parser.add_argument("--port", type=int, help="Database port")
-    backup_parser.add_argument("--user", help="Database username")
-    backup_parser.add_argument("--password", help="Database password")
-    backup_parser.add_argument("--db-name", required=True, help="Name of the database")
-    backup_parser.add_argument("--output", default="./backups", help="Where to store the backup")
-    backup_parser.add_argument("--verbose", action="store_true", help="Enable detailed output")
-    backup_parser.add_argument("--no-compress", action="store_true", help="Skip compression")
+    backup_parser.add_argument("--host")
+    backup_parser.add_argument("--port", type=int)
+    backup_parser.add_argument("--user")
+    backup_parser.add_argument("--password")
+    backup_parser.add_argument("--db-name", required=True)
+    backup_parser.add_argument("--output", default="./backups")
+    backup_parser.add_argument("--verbose", action="store_true")
+    backup_parser.add_argument("--no-compress", action="store_true")
 
-    # ---- restore command ----
     restore_parser = subparsers.add_parser("restore", help="Restore a database from backup")
     restore_parser.add_argument("--db-type", required=True, choices=["sqlite", "mysql", "postgres", "mongodb"])
-    restore_parser.add_argument("--backup-file", required=True, help="Path to the backup file")
-    restore_parser.add_argument("--target", required=True, help="Path to restore the database to")
-    restore_parser.add_argument("--verbose", action="store_true", help="Enable detailed output")
+    restore_parser.add_argument("--backup-file", required=True)
+    restore_parser.add_argument("--target", help="Target file/db name (required for sqlite)")
+    restore_parser.add_argument("--host")
+    restore_parser.add_argument("--port", type=int)
+    restore_parser.add_argument("--user")
+    restore_parser.add_argument("--password")
+    restore_parser.add_argument("--db-name", help="Database name to restore into (mysql/postgres)")
+    restore_parser.add_argument("--verbose", action="store_true")
 
-    # ---- list command ----
     list_parser = subparsers.add_parser("list", help="List existing backups")
-    list_parser.add_argument("--dir", default="./backups", help="Directory to list backups from")
+    list_parser.add_argument("--dir", default="./backups")
 
     return parser
 
@@ -271,15 +86,13 @@ def main():
         logging.info(f"Starting backup: db={args.db_name}, type={args.db_type}")
         start_time = time.time()
         try:
-            if args.db_type == "sqlite":
-                result = backup_sqlite(args.db_name, args.output, args.verbose, compress=not args.no_compress)
-            elif args.db_type == "mysql":
-                result = backup_mysql(args.host, args.port, args.user, args.password, args.db_name, args.output, args.verbose, compress=not args.no_compress)
-            elif args.db_type == "postgres":
-                result = backup_postgres(args.host, args.port, args.user, args.password, args.db_name, args.output, args.verbose, compress=not args.no_compress)
-            else:
-                logging.warning(f"[backup] {args.db_type} not implemented yet.")
-                return
+            connector = get_connector(
+                args.db_type,
+                host=args.host, port=args.port,
+                user=args.user, password=args.password,
+                db_name=args.db_name
+            )
+            result = connector.backup(args.output, args.verbose, compress=not args.no_compress)
             elapsed = time.time() - start_time
             logging.info(f"Backup successful: {result} (took {elapsed:.2f}s)")
         except SystemExit:
@@ -290,24 +103,29 @@ def main():
             elapsed = time.time() - start_time
             logging.exception(f"Backup failed after {elapsed:.2f}s: {e}")
             sys.exit(1)
+
     elif args.command == "restore":
-        if args.db_type == "sqlite":
-            logging.info(f"Starting restore: backup_file={args.backup_file}, target={args.target}")
-            start_time = time.time()
-            try:
-                restore_sqlite(args.backup_file, args.target, args.verbose)
-                elapsed = time.time() - start_time
-                logging.info(f"Restore successful (took {elapsed:.2f}s)")
-            except SystemExit:
-                elapsed = time.time() - start_time
-                logging.error(f"Restore failed after {elapsed:.2f}s: backup file not found")
-                raise
-            except Exception as e:
-                elapsed = time.time() - start_time
-                logging.exception(f"Restore failed after {elapsed:.2f}s: {e}")
-                sys.exit(1)
-        else:
-            logging.warning(f"[restore] {args.db_type} not implemented yet.")
+        logging.info(f"Starting restore: backup_file={args.backup_file}")
+        start_time = time.time()
+        try:
+            connector = get_connector(
+                args.db_type,
+                host=args.host, port=args.port,
+                user=args.user, password=args.password,
+                db_name=args.db_name
+            )
+            connector.restore(args.backup_file, args.verbose, target=args.target)
+            elapsed = time.time() - start_time
+            logging.info(f"Restore successful (took {elapsed:.2f}s)")
+        except SystemExit:
+            elapsed = time.time() - start_time
+            logging.error(f"Restore failed after {elapsed:.2f}s")
+            raise
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logging.exception(f"Restore failed after {elapsed:.2f}s: {e}")
+            sys.exit(1)
+
     elif args.command == "list":
         list_backups(args.dir)
 
