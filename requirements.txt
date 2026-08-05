@@ -4,3 +4,4 @@ psycopg2-binary
 pymongo
 requests
 schedule
+boto3
