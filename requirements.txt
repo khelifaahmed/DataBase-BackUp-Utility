@@ -1,7 +1,11 @@
+  GNU nano 8.7                               requirements.txt
 pymysql
 psycopg2-binary
-
 pymongo
 requests
 schedule
 boto3
+
+
+
+
