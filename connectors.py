@@ -18,6 +18,14 @@ def compress_file(source_path: Path, delete_original: bool = True) -> Path:
     return compressed_path
 
 
+def compress_dir(source_dir: Path, delete_original: bool = True) -> Path:
+    archive_base = str(source_dir)
+    archive_path = shutil.make_archive(archive_base, "zip", root_dir=source_dir)
+    if delete_original:
+        shutil.rmtree(source_dir)
+    return Path(archive_path)
+
+
 class DatabaseConnector(ABC):
     """Base class that every database connector must implement."""
 
@@ -34,7 +42,7 @@ class DatabaseConnector(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def backup(self, output_dir: str, verbose: bool = False, compress: bool = True) -> Path:
+    def backup(self, output_dir: str, verbose: bool = False, compress: bool = True, tables: list = None) -> Path:
         """Perform the backup and return the path to the backup file."""
         raise NotImplementedError
 
@@ -43,11 +51,12 @@ class DatabaseConnector(ABC):
         """Restore the database from a backup file."""
         raise NotImplementedError
 
+
 class SQLiteConnector(DatabaseConnector):
     def test_connection(self) -> bool:
         return Path(self.db_name).exists()
 
-    def backup(self, output_dir: str, verbose: bool = False, compress: bool = True) -> Path:
+    def backup(self, output_dir: str, verbose: bool = False, compress: bool = True, tables: list = None) -> Path:
         source = Path(self.db_name)
         if not source.exists():
             print(f"Error: database file '{self.db_name}' not found.")
@@ -96,6 +105,7 @@ class SQLiteConnector(DatabaseConnector):
 
         print(f"Restore successful: {target_path}")
 
+
 class MySQLConnector(DatabaseConnector):
     def test_connection(self) -> bool:
         import pymysql
@@ -111,7 +121,7 @@ class MySQLConnector(DatabaseConnector):
             print(f"MySQL connection failed: {e}")
             return False
 
-    def backup(self, output_dir: str, verbose: bool = False, compress: bool = True) -> Path:
+    def backup(self, output_dir: str, verbose: bool = False, compress: bool = True, tables: list = None) -> Path:
         if not self.test_connection():
             print("Error: could not connect to MySQL database. Check your credentials.")
             sys.exit(1)
@@ -129,6 +139,11 @@ class MySQLConnector(DatabaseConnector):
             f"--user={self.user}",
             self.db_name
         ]
+
+        if tables:
+            cmd.extend(tables)
+            if verbose:
+                print(f"Backing up specific tables: {', '.join(tables)}")
 
         env = os.environ.copy()
         env["MYSQL_PWD"] = self.password or ""
@@ -156,7 +171,6 @@ class MySQLConnector(DatabaseConnector):
             print(f"Error: backup file '{backup_file}' not found.")
             sys.exit(1)
 
-        # decompress to a temp .sql if needed
         sql_path = backup_path
         cleanup_temp = False
         if backup_path.suffix == ".gz":
@@ -201,7 +215,7 @@ class PostgresConnector(DatabaseConnector):
             print(f"PostgreSQL connection failed: {e}")
             return False
 
-    def backup(self, output_dir: str, verbose: bool = False, compress: bool = True) -> Path:
+    def backup(self, output_dir: str, verbose: bool = False, compress: bool = True, tables: list = None) -> Path:
         if not self.test_connection():
             print("Error: could not connect to PostgreSQL database. Check your credentials.")
             sys.exit(1)
@@ -219,6 +233,12 @@ class PostgresConnector(DatabaseConnector):
             f"--username={self.user}",
             self.db_name
         ]
+
+        if tables:
+            for table in tables:
+                cmd.extend([f"--table={table}"])
+            if verbose:
+                print(f"Backing up specific tables: {', '.join(tables)}")
 
         env = os.environ.copy()
         env["PGPASSWORD"] = self.password or ""
@@ -273,13 +293,6 @@ class PostgresConnector(DatabaseConnector):
 
         print(f"Restore successful into database '{self.db_name}'")
 
-def compress_dir(source_dir: Path, delete_original: bool = True) -> Path:
-    archive_base = str(source_dir)
-    archive_path = shutil.make_archive(archive_base, "zip", root_dir=source_dir)
-    if delete_original:
-        shutil.rmtree(source_dir)
-    return Path(archive_path)
-
 
 class MongoConnector(DatabaseConnector):
     def _build_uri(self) -> str:
@@ -298,7 +311,7 @@ class MongoConnector(DatabaseConnector):
             print(f"MongoDB connection failed: {e}")
             return False
 
-    def backup(self, output_dir: str, verbose: bool = False, compress: bool = True) -> Path:
+    def backup(self, output_dir: str, verbose: bool = False, compress: bool = True, tables: list = None) -> Path:
         if not self.test_connection():
             print("Error: could not connect to MongoDB database. Check your credentials.")
             sys.exit(1)
@@ -333,7 +346,7 @@ class MongoConnector(DatabaseConnector):
 
         return destination
 
-    def restore(self, backup_file: str, verbose: bool = False, **kwargs) -> None:
+    def restore(self, backup_file: str, verbose: bool = False, collection: str = None, **kwargs) -> None:
         backup_path = Path(backup_file)
         if not backup_path.exists():
             print(f"Error: backup file '{backup_file}' not found.")
@@ -350,11 +363,20 @@ class MongoConnector(DatabaseConnector):
             "mongorestore",
             f"--uri={self._build_uri()}",
             f"--db={self.db_name}",
-            str(dump_dir / self.db_name)
         ]
 
-        if verbose:
-            print(f"Restoring into MongoDB database '{self.db_name}'")
+        if collection:
+            collection_file = dump_dir / self.db_name / f"{collection}.bson"
+            if not collection_file.exists():
+                print(f"Error: collection '{collection}' not found in this backup.")
+                sys.exit(1)
+            cmd.extend([f"--collection={collection}", str(collection_file)])
+            if verbose:
+                print(f"Restoring only collection '{collection}' into '{self.db_name}'")
+        else:
+            cmd.append(str(dump_dir / self.db_name))
+            if verbose:
+                print(f"Restoring full database '{self.db_name}'")
 
         result = subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
 
@@ -365,7 +387,8 @@ class MongoConnector(DatabaseConnector):
             print(f"mongorestore failed: {result.stderr.decode()}")
             sys.exit(1)
 
-        print(f"Restore successful into database '{self.db_name}'")
+        print(f"Restore successful into database '{self.db_name}'" + (f" (collection: {collection})" if collection else ""))
+
 
 def get_connector(db_type: str, **kwargs) -> DatabaseConnector:
     connectors = {

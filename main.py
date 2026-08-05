@@ -153,7 +153,9 @@ def run_backup_once(args) -> None:
             user=args.user, password=args.password,
             db_name=args.db_name
         )
-        result = connector.backup(args.output, args.verbose, compress=not args.no_compress)
+
+        tables_list = args.tables.split(",") if args.tables else None
+        result = connector.backup(args.output, args.verbose, compress=not args.no_compress, tables=tables_list)
         elapsed = time.time() - start_time
         logging.info(f"Backup successful: {result} (took {elapsed:.2f}s)")
 
@@ -224,7 +226,8 @@ def build_parser():
     backup_parser.add_argument("--aws-region", default="us-east-1", help="Region (default: us-east-1)")
     backup_parser.add_argument("--s3-endpoint", help="Custom S3-compatible endpoint (e.g. MinIO, Backblaze, R2); leave blank for AWS")
     backup_parser.add_argument("--schedule", choices=["hourly", "daily"], help="Run backup repeatedly on a schedule (keeps process running)")
-
+    backup_parser.add_argument("--tables", help="Comma-separated list of specific tables to back up (MySQL/Postgres only)")
+    
     # ---- restore command ----
     restore_parser = subparsers.add_parser("restore", help="Restore a database from backup")
     restore_parser.add_argument("--db-type", required=True, choices=["sqlite", "mysql", "postgres", "mongodb"])
@@ -236,7 +239,7 @@ def build_parser():
     restore_parser.add_argument("--password")
     restore_parser.add_argument("--db-name", help="Database name to restore into (mysql/postgres/mongodb)")
     restore_parser.add_argument("--verbose", action="store_true")
-
+    restore_parser.add_argument("--collection", help="Restore only this specific collection (MongoDB only)")
     # ---- list command ----
     list_parser = subparsers.add_parser("list", help="List existing backups")
     list_parser.add_argument("--dir", default="./backups")
@@ -280,7 +283,7 @@ def main():
                 user=args.user, password=args.password,
                 db_name=args.db_name
             )
-            connector.restore(args.backup_file, args.verbose, target=args.target)
+            connector.restore(args.backup_file, args.verbose, target=args.target, collection=args.collection)
             elapsed = time.time() - start_time
             logging.info(f"Restore successful (took {elapsed:.2f}s)")
         except SystemExit:
