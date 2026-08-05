@@ -3,6 +3,7 @@
 A command-line tool for backing up and restoring databases across multiple database management systems (DBMS). Supports SQLite, MySQL, PostgreSQL, and MongoDB, with compression, local and cloud storage, retention policies, Slack notifications, and scheduling.
 
 This project was built as a learning exercise in Python CLI development, object-oriented design, and working with real-world database tooling.
+Project idea from https://roadmap.sh/projects/database-backup-utility
 
 ---
 
