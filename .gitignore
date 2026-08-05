@@ -4,3 +4,4 @@ __pycache__/
 backups/
 .env
 logs/
+test_final_check.db
